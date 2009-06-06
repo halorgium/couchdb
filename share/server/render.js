@@ -129,7 +129,7 @@ respondWith = function(req, responders) {
     bestKey = req.query.format;
   }
   var rFunc = responders[bestKey || responders.fallback || "html"];
-  if (rFunc) {      
+  if (rFunc) {     
     var resp = maybeWrapResponse(rFunc());
     resp["headers"] = resp["headers"] || {};
     resp["headers"]["Content-Type"] = bestMime;
@@ -189,7 +189,7 @@ function start(resp) {
 };
 
 function sendStart(label) {
-  respond([label||"start", chunks, startResp]);
+  respond(["start", chunks, startResp]);
   chunks = [];
   startResp = {};
 }
@@ -204,8 +204,9 @@ function blowChunks(label) {
   chunks = [];
 };
 
-var gotRow = false;
+var gotRow = false, lastRow = false;
 function getRow() {
+  if (lastRow) return null;
   if (!gotRow) {
     gotRow = true;
     sendStart();
@@ -214,7 +215,10 @@ function getRow() {
   }
   var line = readline();
   var json = eval(line);
-  if (json[0] == "list_end") return null;
+  if (json[0] == "list_end") {
+    lastRow = true
+    return null;
+  }
   if (json[0] != "list_row") {
     respond({
       error: "query_server_error",
@@ -269,13 +273,13 @@ function runShowRenderFunction(renderFun, args, funSrc, htmlErrors) {
 function runListRenderFunction(renderFun, args, funSrc, htmlErrors) {
   try {
     gotRow = false;
+    lastRow = false;
     var resp = renderFun.apply(null, args);
-    if (resp) chunks.push(resp);
     if (!gotRow) {
-      sendStart("resp");
-    } else {
-      blowChunks("end");      
+      getRow();
     }
+    if (resp) chunks.push(resp);
+    blowChunks("end");      
   } catch(e) {
     respondError(e);
   }

@@ -226,7 +226,9 @@ describe "query server normal case" do
     end
     it "should do headers proper" do
       @qs.rrun(["list", {"total_rows"=>1000}, {"q" => "ok"}])
-      @qs.jsgets.should == ["resp", ["first chunk", 'second "chunk"', "tail"], {"headers"=>{"Content-Type"=>"text/plain"}}]
+      @qs.jsgets.should == ["start", ["first chunk", 'second "chunk"'], {"headers"=>{"Content-Type"=>"text/plain"}}]
+      @qs.rrun(["list_end"])
+      @qs.jsgets.should == ["end", ["tail"]]
     end
   end
   

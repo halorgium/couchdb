@@ -87,11 +87,12 @@ couchTests.list_views = function(debug) {
           html : function() {
             send("HTML <ul>");
 
-            var row;
+            var row, num = 0;
             while (row = getRow()) {
+              num ++;
               send('\n<li>Key: '
                 +row.key+' Value: '+row.value
-                +' LineNo: '+row_info.row_number+'</li>');
+                +' LineNo: '+num+'</li>');
             }
 
             // tail
@@ -138,6 +139,18 @@ couchTests.list_views = function(debug) {
             return " tail";
           }
         });
+      }),
+      tooManyGetRows : stringFun(function() {
+        send("head");
+        var row;
+        while(row = getRow()) {
+          send(row.key);        
+        };
+        getRow();
+        getRow();
+        getRow();
+        row = getRow();
+        return "after row: "+toJSON(row);
       }),
       emptyList: stringFun(function() {
         return "";
@@ -206,21 +219,25 @@ couchTests.list_views = function(debug) {
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/simpleForm/basicView?startkey=30");
   T(xhr.status == 200, "0 rows");
   T(/Total Rows/.test(xhr.responseText));
-  return;
+
+  //too many Get Rows
+  var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/tooManyGetRows/basicView");
+  T(xhr.status == 200, "tooManyGetRows");
+  T(/9after row: null/.test(xhr.responseText));
 
 
   // reduce with 0 rows
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/simpleForm/withReduce?startkey=30");
   T(xhr.status == 200, "reduce 0 rows");
   T(/Total Rows/.test(xhr.responseText));
-  T(/Offset: undefined/.test(xhr.responseText));
-
+  T(/LastKey: undefined/.test(xhr.responseText));
   
   // when there is a reduce present, but not used
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/simpleForm/withReduce?reduce=false");
   T(xhr.status == 200, "reduce false");
   T(/Total Rows/.test(xhr.responseText));
   T(/Key: 1/.test(xhr.responseText));
+
   
   // when there is a reduce present, and used
   xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/simpleForm/withReduce?group=true");
@@ -243,32 +260,13 @@ couchTests.list_views = function(debug) {
     headers: {"if-none-match": etag}
   });
   T(xhr.status == 200, "reduce etag");
-  
-  // with accept headers for HTML
-  xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/acceptSwitch/basicView", {
-    headers: {
-      "Accept": 'text/html'
-    }
-  });
-  T(xhr.getResponseHeader("Content-Type") == "text/html");
-  T(xhr.responseText.match(/HTML/));
-  T(xhr.responseText.match(/Value/));
 
-  // now with xml
-  xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/acceptSwitch/basicView", {
-    headers: {
-      "Accept": 'application/xml'
-    }
-  });
-  T(xhr.getResponseHeader("Content-Type") == "application/xml");
-  T(xhr.responseText.match(/XML/));
-  T(xhr.responseText.match(/entry/));
+  return;
 
   // now with extra qs params
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/qsParams/basicView?foo=blam");
   T(xhr.responseText.match(/blam/));
   
-  // aborting iteration
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/stopIter/basicView");
   T("content type" == "text/plain");
   T(xhr.responseText.match(/^head 0 1 2 tail$/) && "basic stop");
@@ -307,4 +305,25 @@ couchTests.list_views = function(debug) {
   
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/rowError/basicView");
   T(/<h1>Render Error<\/h1>/.test(xhr.responseText));
+  
+  
+  // with accept headers for HTML
+  xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/acceptSwitch/basicView", {
+    headers: {
+      "Accept": 'text/html'
+    }
+  });
+  T(xhr.getResponseHeader("Content-Type") == "text/html");
+  T(xhr.responseText.match(/HTML/));
+  T(xhr.responseText.match(/Value/));
+
+  // now with xml
+  xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/acceptSwitch/basicView", {
+    headers: {
+      "Accept": 'application/xml'
+    }
+  });
+  T(xhr.getResponseHeader("Content-Type") == "application/xml");
+  T(xhr.responseText.match(/XML/));
+  T(xhr.responseText.match(/entry/));
 };

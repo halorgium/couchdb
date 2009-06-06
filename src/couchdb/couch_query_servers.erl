@@ -213,7 +213,7 @@ render_list_tail({Lang, Pid}) ->
 render_reduce_head({_Lang, Pid}, Req, Db) ->
     Head = {[]},
     JsonReq = couch_httpd_external:json_req_obj(Req, Db),
-    couch_os_process:prompt(Pid, [<<"list_begin">>, Head, JsonReq]).
+    couch_os_process:prompt(Pid, [<<"list">>, Head, JsonReq]).
 
 render_reduce_row({_Lang, Pid}, Req, Db, {Key, Value}) ->
     JsonRow = {[{key, Key}, {value, Value}]},
