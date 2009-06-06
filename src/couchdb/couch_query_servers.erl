@@ -19,7 +19,7 @@
 -export([start_doc_map/2, map_docs/2, stop_doc_map/1]).
 -export([reduce/3, rereduce/3,validate_doc_update/5]).
 -export([render_doc_show/6,start_view_list/2,render_list_head/5, 
-        render_list_row/4, render_list_tail/3, render_reduce_head/3, 
+        render_list_row/4, render_list_tail/1, render_reduce_head/3, 
         render_reduce_row/4]).
 % -export([test/0]).
 
@@ -183,7 +183,7 @@ render_doc_show(Lang, ShowSrc, DocId, Doc, Req, Db) ->
         _ -> {{append_docid(DocId, JsonReqIn)}, couch_doc:to_json_obj(Doc, [revs])}
     end,
     try couch_os_process:prompt(Pid, 
-        [<<"show_doc">>, ShowSrc, JsonDoc, JsonReq]) of
+        [<<"show">>, ShowSrc, JsonDoc, JsonReq]) of
     FormResp ->
         FormResp
     after
@@ -198,19 +198,17 @@ start_view_list(Lang, ListSrc) ->
 render_list_head({_Lang, Pid}, Req, Db, TotalRows, Offset) ->
     Head = {[{<<"total_rows">>, TotalRows}, {<<"offset">>, Offset}]},
     JsonReq = couch_httpd_external:json_req_obj(Req, Db),
-    couch_os_process:prompt(Pid, [<<"list_begin">>, Head, JsonReq]).
+    couch_os_process:prompt(Pid, [<<"list">>, Head, JsonReq]).
 
 render_list_row({_Lang, Pid}, Req, Db, {{Key, DocId}, Value}) ->
     JsonRow = couch_httpd_view:view_row_obj(Db, {{Key, DocId}, Value}, false),
     JsonReq = couch_httpd_external:json_req_obj(Req, Db),
     couch_os_process:prompt(Pid, [<<"list_row">>, JsonRow, JsonReq]).
 
-render_list_tail({Lang, Pid}, Req, Db) ->
-    JsonReq = couch_httpd_external:json_req_obj(Req, Db),
-    JsonResp = couch_os_process:prompt(Pid, [<<"list_tail">>, JsonReq]),
+render_list_tail({Lang, Pid}) ->
+    JsonResp = couch_os_process:prompt(Pid, [<<"list_end">>]),
     ok = ret_os_process(Lang, Pid),
-    JsonResp.
-    
+    JsonResp.    
     
 render_reduce_head({_Lang, Pid}, Req, Db) ->
     Head = {[]},

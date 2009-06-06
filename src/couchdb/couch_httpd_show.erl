@@ -119,37 +119,34 @@ send_view_list_response(Lang, ListSrc, ViewName, DesignId, Req, Db, Keys) ->
 
 make_map_start_resp_fun(QueryServer, Db) ->
     fun(Req, CurrentEtag, TotalViewCount, Offset, _Acc) ->
-        ExternalResp = couch_query_servers:render_list_head(QueryServer, 
+        [_,Chunks,ExternalResp] = couch_query_servers:render_list_head(QueryServer, 
             Req, Db, TotalViewCount, Offset),
         JsonResp = apply_etag(ExternalResp, CurrentEtag),
         #extern_resp_args{
             code = Code,
-            data = BeginBody,
             ctype = CType,
             headers = ExtHeaders
         } = couch_httpd_external:parse_external_response(JsonResp),
         JsonHeaders = couch_httpd_external:default_or_content_type(CType, ExtHeaders),
         {ok, Resp} = start_chunked_response(Req, Code, JsonHeaders),
-        {ok, Resp, binary_to_list(BeginBody)}
+        {ok, Resp, ?b2l(?l2b(Chunks))}
     end.
 
 make_map_send_row_fun(QueryServer, Req) ->
     fun(Resp, Db2, {{Key, DocId}, Value}, _IncludeDocs, RowFront) ->
         try
-            JsonResp = couch_query_servers:render_list_row(QueryServer, 
+            [<<"chunks">>,Chunks] = couch_query_servers:render_list_row(QueryServer, 
                 Req, Db2, {{Key, DocId}, Value}),
-            #extern_resp_args{
-                stop = StopIter,
-                data = RowBody
-            } = couch_httpd_external:parse_external_response(JsonResp),
-            case StopIter of
-            true -> {stop, ""};
+            case {false, 5} of
+            {_, 0} -> 
+                {stop, ""};
+            {true, _} -> 
+                Chunk = RowFront ++ ?b2l(?l2b(Chunks)),
+                send_non_empty_chunk(Resp, Chunk),
+                {stop, ""};
             _ ->
-                Chunk = RowFront ++ binary_to_list(RowBody),
-                case Chunk of
-                    [] -> ok;
-                    _ -> send_chunk(Resp, Chunk)
-                end,
+                Chunk = RowFront ++ ?b2l(?l2b(Chunks)),
+                send_non_empty_chunk(Resp, Chunk),
                 {ok, ""}
             end
         catch
@@ -157,6 +154,12 @@ make_map_send_row_fun(QueryServer, Req) ->
                 send_chunked_error(Resp, Error),
                 throw({already_sent, Resp, Error})
         end
+    end.
+
+send_non_empty_chunk(Resp, Chunk) ->
+    case Chunk of
+        [] -> ok;
+        _ -> send_chunk(Resp, Chunk)
     end.
 
 output_map_list(#httpd{mochi_req=MReq}=Req, Lang, ListSrc, View, Group, Db, QueryArgs, nil) ->
@@ -350,19 +353,14 @@ finish_list(Req, Db, QueryServer, Etag, FoldResult, StartListRespFun, TotalRows)
         {_, _, Resp0, _} ->
             {Resp0, ""}
     end,
-    JsonTail = couch_query_servers:render_list_tail(QueryServer, Req, Db),
-    #extern_resp_args{
-        data = Tail
-    } = couch_httpd_external:parse_external_response(JsonTail),
-    Chunk = BeginBody ++ binary_to_list(Tail),
+    [<<"end">>, Chunks] = couch_query_servers:render_list_tail(QueryServer),
+    Chunk = BeginBody ++ ?b2l(?l2b(Chunks)),
     case Chunk of
         [] -> ok;
         _ -> send_chunk(Resp, Chunk)
     end,
     send_chunk(Resp, []).
 
-render_head_for_empty_list(StartListRespFun, Req, Etag, null) ->
-    StartListRespFun(Req, Etag, []);
 render_head_for_empty_list(StartListRespFun, Req, Etag, TotalRows) ->
     StartListRespFun(Req, Etag, TotalRows, null, []).
     
@@ -373,7 +371,7 @@ send_doc_show_response(Lang, ShowSrc, DocId, nil, #httpd{mochi_req=MReq}=Req, Db
     Accept = proplists:get_value('Accept', Hlist),
     CurrentEtag = couch_httpd:make_etag({Lang, ShowSrc, nil, Accept}),
     couch_httpd:etag_respond(Req, CurrentEtag, fun() -> 
-        ExternalResp = couch_query_servers:render_doc_show(Lang, ShowSrc, 
+        [<<"resp">>, ExternalResp] = couch_query_servers:render_doc_show(Lang, ShowSrc, 
             DocId, nil, Req, Db),
         JsonResp = apply_etag(ExternalResp, CurrentEtag),
         couch_httpd_external:send_external_response(Req, JsonResp)
@@ -387,7 +385,7 @@ send_doc_show_response(Lang, ShowSrc, DocId, #doc{revs=Revs}=Doc, #httpd{mochi_r
     CurrentEtag = couch_httpd:make_etag({Lang, ShowSrc, Revs, Accept}),
     % We know our etag now    
     couch_httpd:etag_respond(Req, CurrentEtag, fun() -> 
-        ExternalResp = couch_query_servers:render_doc_show(Lang, ShowSrc, 
+        [<<"resp">>, ExternalResp] = couch_query_servers:render_doc_show(Lang, ShowSrc, 
             DocId, Doc, Req, Db),
         JsonResp = apply_etag(ExternalResp, CurrentEtag),
         couch_httpd_external:send_external_response(Req, JsonResp)
