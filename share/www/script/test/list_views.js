@@ -261,13 +261,11 @@ couchTests.list_views = function(debug) {
   });
   T(xhr.status == 200, "reduce etag");
 
-  return;
-
   // empty list
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/emptyList/basicView");
-  T(xhr.responseText.match(/^$/));
+  T(xhr.responseText.match(/^ $/));
   xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/emptyList/withReduce?group=true");
-  T(xhr.responseText.match(/^$/));
+  T(xhr.responseText.match(/^ $/));
 
   // multi-key fetch
   var xhr = CouchDB.request("POST", "/test_suite_db/_design/lists/_list/simpleForm/basicView", {
@@ -286,19 +284,19 @@ couchTests.list_views = function(debug) {
   });
   T(xhr.status == 400);
   T(/query_parse_error/.test(xhr.responseText));
-  
+    
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/rowError/basicView");
-  T(/<h1>Render Error<\/h1>/.test(xhr.responseText));
+  T(/ReferenceError/.test(xhr.responseText));
+
 
   // now with extra qs params
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/qsParams/basicView?foo=blam");
   T(xhr.responseText.match(/blam/));
   
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/stopIter/basicView");
-  T("content type" == "text/plain");
+  // T(xhr.getResponseHeader("Content-Type") == "text/plain");
   T(xhr.responseText.match(/^head 0 1 2 tail$/) && "basic stop");
 
-  return;
   xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/stopIter2/basicView");
   T(xhr.responseText.match(/^head 0 1 2 tail$/) && "stop 2");
 
@@ -307,9 +305,6 @@ couchTests.list_views = function(debug) {
   T(xhr.responseText.match(/^head 0 1 2 tail$/) && "reduce stop");
   xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/stopIter2/withReduce?group=true");
   T(xhr.responseText.match(/^head 0 1 2 tail$/) && "reduce stop 2");
-
-
-  
   
   // with accept headers for HTML
   xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/acceptSwitch/basicView", {

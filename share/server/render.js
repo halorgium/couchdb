@@ -113,6 +113,7 @@ var Mimeparse = (function() {
 })();
 
 var respCT;
+var respTail;
 // this function provides a shortcut for managing responses by Accept header
 respondWith = function(req, responders) {
   var bestKey = null, accept = req.headers["Accept"];
@@ -129,13 +130,15 @@ respondWith = function(req, responders) {
     bestKey = req.query.format;
   }
   var rFunc = responders[bestKey || responders.fallback || "html"];
-  respCT = bestMime;
   if (rFunc) {    
     if (isShow) {
       var resp = maybeWrapResponse(rFunc());
       resp["headers"] = resp["headers"] || {};
       resp["headers"]["Content-Type"] = bestMime;
       respond(["resp", resp]);
+    } else {
+      respCT = bestMime;
+      respTail = rFunc();
     }
   } else {
     throw({code:406, body:"Not Acceptable: "+accept});    
@@ -192,6 +195,10 @@ function start(resp) {
 };
 
 function sendStart(label) {
+  startResp = startResp || {};
+  startResp["headers"] = startResp["headers"] || {};
+  startResp["headers"]["Content-Type"] = startResp["headers"]["Content-Type"] || respCT;
+  
   respond(["start", chunks, startResp]);
   chunks = [];
   startResp = {};
@@ -249,7 +256,7 @@ var Render = (function() {
     },
     list : function(head, req) {
       isShow = false;
-      runListRenderFunction(funs[0], [head, req], funsrc[0]);
+      runListRenderFunction(funs[0], [head, req], funsrc[0], false);
     }
   }
 })();
@@ -272,21 +279,26 @@ function runShowRenderFunction(renderFun, args, funSrc, htmlErrors) {
       renderError("undefined response from render function");
     }
   } catch(e) {
-    respondError(e);
+    respondError(e, funSrc, htmlErrors);
   }
 };
 function runListRenderFunction(renderFun, args, funSrc, htmlErrors) {
   try {
     gotRow = false;
     lastRow = false;
+    respTail = "";
     var resp = renderFun.apply(null, args);
     if (!gotRow) {
       getRow();
     }
-    if (resp) chunks.push(resp);
+    if (typeof resp != "undefined") {
+      chunks.push(resp);      
+    } else if (respTail) {
+      chunks.push(respTail);      
+    }
     blowChunks("end");      
   } catch(e) {
-    respondError(e);
+    respondError(e, funSrc, htmlErrors);
   }
 };
 
@@ -295,7 +307,7 @@ function renderError(m) {
 }
 
 
-function respondError(e) {
+function respondError(e, funSrc, htmlErrors) {
   var logMessage = "function raised error: "+e.toString();
   log(logMessage);
   log("stacktrace: "+e.stack);
