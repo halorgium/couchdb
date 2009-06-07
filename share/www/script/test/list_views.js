@@ -113,8 +113,8 @@ couchTests.list_views = function(debug) {
           }
         });
       }),
-      qsParams: stringFun(function(req) {
-        return req.query.foo + "\n";
+      qsParams: stringFun(function(head, req) {
+        return toJSON(req.query) + "\n";
       }),
       stopIter: stringFun(function(req) {
         send("head");
@@ -126,7 +126,7 @@ couchTests.list_views = function(debug) {
         };
         return " tail";
       }),
-      stopIter2: stringFun(function(req) {
+      stopIter2: stringFun(function(head, req) {
         respondWith(req, {
           html: function() {
             send("head");
@@ -153,9 +153,9 @@ couchTests.list_views = function(debug) {
         return "after row: "+toJSON(row);
       }),
       emptyList: stringFun(function() {
-        return "";
+        return " ";
       }),
-      rowError : stringFun(function(head, row, req, row_info) {
+      rowError : stringFun(function(head, req) {
         send("head");
         var row = getRow();
         send(fooBarBam); // intentional error
@@ -263,22 +263,6 @@ couchTests.list_views = function(debug) {
 
   return;
 
-  // now with extra qs params
-  var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/qsParams/basicView?foo=blam");
-  T(xhr.responseText.match(/blam/));
-  
-  var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/stopIter/basicView");
-  T("content type" == "text/plain");
-  T(xhr.responseText.match(/^head 0 1 2 tail$/) && "basic stop");
-  xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/stopIter2/basicView");
-  T(xhr.responseText.match(/^head 0 1 2 tail$/) && "stop 2");
-
-  // aborting iteration with reduce
-  var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/stopIter/withReduce?group=true");
-  T(xhr.responseText.match(/^head 0 1 2 tail$/) && "reduce stop");
-  xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/stopIter2/withReduce?group=true");
-  T(xhr.responseText.match(/^head 0 1 2 tail$/) && "reduce stop 2");
-
   // empty list
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/emptyList/basicView");
   T(xhr.responseText.match(/^$/));
@@ -305,6 +289,26 @@ couchTests.list_views = function(debug) {
   
   var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/rowError/basicView");
   T(/<h1>Render Error<\/h1>/.test(xhr.responseText));
+
+  // now with extra qs params
+  var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/qsParams/basicView?foo=blam");
+  T(xhr.responseText.match(/blam/));
+  
+  var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/stopIter/basicView");
+  T("content type" == "text/plain");
+  T(xhr.responseText.match(/^head 0 1 2 tail$/) && "basic stop");
+
+  return;
+  xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/stopIter2/basicView");
+  T(xhr.responseText.match(/^head 0 1 2 tail$/) && "stop 2");
+
+  // aborting iteration with reduce
+  var xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/stopIter/withReduce?group=true");
+  T(xhr.responseText.match(/^head 0 1 2 tail$/) && "reduce stop");
+  xhr = CouchDB.request("GET", "/test_suite_db/_design/lists/_list/stopIter2/withReduce?group=true");
+  T(xhr.responseText.match(/^head 0 1 2 tail$/) && "reduce stop 2");
+
+
   
   
   // with accept headers for HTML

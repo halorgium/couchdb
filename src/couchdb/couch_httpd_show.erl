@@ -135,12 +135,16 @@ make_map_start_resp_fun(QueryServer, Db) ->
 make_map_send_row_fun(QueryServer, Req) ->
     fun(Resp, Db2, {{Key, DocId}, Value}, _IncludeDocs, RowFront) ->
         try
-            [<<"chunks">>,Chunks] = couch_query_servers:render_list_row(QueryServer, 
+            [Go,Chunks] = couch_query_servers:render_list_row(QueryServer, 
                 Req, Db2, {{Key, DocId}, Value}),
             Chunk = RowFront ++ ?b2l(?l2b(Chunks)),
             send_non_empty_chunk(Resp, Chunk),
-            % {stop, ""};
-            {ok, ""}
+            case Go of
+                <<"chunks">> ->
+                    {ok, ""};
+                <<"end">> ->
+                    {stop, ""}
+            end
         catch
             throw:Error ->
                 send_chunked_error(Resp, Error),

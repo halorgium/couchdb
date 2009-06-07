@@ -112,7 +112,7 @@ var Mimeparse = (function() {
   return publicMethods;
 })();
 
-
+var respCT;
 // this function provides a shortcut for managing responses by Accept header
 respondWith = function(req, responders) {
   var bestKey = null, accept = req.headers["Accept"];
@@ -129,11 +129,14 @@ respondWith = function(req, responders) {
     bestKey = req.query.format;
   }
   var rFunc = responders[bestKey || responders.fallback || "html"];
-  if (rFunc) {     
-    var resp = maybeWrapResponse(rFunc());
-    resp["headers"] = resp["headers"] || {};
-    resp["headers"]["Content-Type"] = bestMime;
-    respond(["resp", resp]);
+  respCT = bestMime;
+  if (rFunc) {    
+    if (isShow) {
+      var resp = maybeWrapResponse(rFunc());
+      resp["headers"] = resp["headers"] || {};
+      resp["headers"]["Content-Type"] = bestMime;
+      respond(["resp", resp]);
+    }
   } else {
     throw({code:406, body:"Not Acceptable: "+accept});    
   }
@@ -234,16 +237,18 @@ function getRow() {
 ////
 ////
 ////
-
+var isShow = false;
 var Render = (function() {
   var row_info;
   
   return {
     show : function(funSrc, doc, req) {
+      isShow = true;
       var formFun = compileFunction(funSrc);
       runShowRenderFunction(formFun, [doc, req], funSrc, true);
     },
     list : function(head, req) {
+      isShow = false;
       runListRenderFunction(funs[0], [head, req], funsrc[0]);
     }
   }
