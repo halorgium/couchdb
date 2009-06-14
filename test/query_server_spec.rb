@@ -251,7 +251,7 @@ describe "query server normal case" do
     end
     it "should should list em" do
       @qs.rrun(["list", {"foo"=>"bar"}, {"q" => "ok"}])
-      @qs.jsgets.should == ["start", ["first chunk", "ok"], {}]
+      @qs.jsgets.should == ["start", ["first chunk", "ok"], {"headers"=>{}}]
       @qs.rrun(["list_row", {"key"=>"baz"}])
       @qs.get_chunks.should == ["baz"]
       @qs.rrun(["list_row", {"key"=>"bam"}])
@@ -261,7 +261,7 @@ describe "query server normal case" do
     end
     it "should work with zero rows" do
       @qs.rrun(["list", {"foo"=>"bar"}, {"q" => "ok"}])
-      @qs.jsgets.should == ["start", ["first chunk", "ok"], {}]
+      @qs.jsgets.should == ["start", ["first chunk", "ok"], {"headers"=>{}}]
       @qs.rrun(["list_end"])
       @qs.jsgets.should == ["end", ["tail"]]
     end
@@ -286,7 +286,7 @@ describe "query server normal case" do
     end
     it "should should buffer em" do
       @qs.rrun(["list", {"foo"=>"bar"}, {"q" => "ok"}])
-      @qs.jsgets.should == ["start", ["bacon"], {}]
+      @qs.jsgets.should == ["start", ["bacon"], {"headers"=>{}}]
       @qs.rrun(["list_row", {"key"=>"baz"}])
       @qs.get_chunks.should == ["baz", "eggs"]
       @qs.rrun(["list_row", {"key"=>"bam"}])
@@ -313,7 +313,7 @@ describe "query server normal case" do
       @qs.add_fun(@fun).should == true
     end
     it "should run normal" do
-      @qs.run(["list", {"foo"=>"bar"}, {"q" => "ok"}]).should == ["start", ["first chunk", "ok"], {}]
+      @qs.run(["list", {"foo"=>"bar"}, {"q" => "ok"}]).should == ["start", ["first chunk", "ok"], {"headers"=>{}}]
       @qs.run(["list_row", {"key"=>"baz"}]).should ==  ["chunks", ["baz"]]
       @qs.run(["list_row", {"key"=>"bam"}]).should ==  ["chunks", ["bam"]]
       @qs.run(["list_row", {"key"=>"foom"}]).should == ["chunks", ["foom"]]
@@ -344,7 +344,7 @@ describe "query server normal case" do
     end
     it "should end early" do
       @qs.run(["list", {"foo"=>"bar"}, {"q" => "ok"}]).
-        should == ["start", ["first chunk", "ok"], {}]
+        should == ["start", ["first chunk", "ok"], {"headers"=>{}}]
       @qs.run(["list_row", {"key"=>"baz"}]).
         should ==  ["chunks", ["baz"]]
 
@@ -360,12 +360,40 @@ describe "query server normal case" do
   end
 end
 
+def should_have_exited qs
+  begin
+    qs.run(["reset"])
+    "raise before this".should == true
+  rescue RuntimeError => e
+    e.message.should == "no response"
+  rescue Errno::EPIPE
+    true.should == true
+  end
+end
+
 describe "query server that exits" do
   before(:each) do
     @qs = QueryServerRunner.run
   end
   after(:each) do
     @qs.close
+  end
+  
+  describe "old style list" do
+    before(:each) do
+      @fun = <<-JS
+        function(head, req, foo, bar) {
+          return "stuff";
+        }
+        JS
+      @qs.reset!
+      @qs.add_fun(@fun).should == true
+    end
+    it "should get a warning" do
+      resp = @qs.run(["list", {"foo"=>"bar"}, {"q" => "ok"}])
+      resp["error"].should == "render_error"
+      resp["reason"].should include("the list API has changed")
+    end
   end
   
   describe "only goes to 2 list" do
@@ -387,20 +415,13 @@ describe "query server that exits" do
       @qs.add_fun(@fun).should == true
     end
     it "should exit if erlang sends too many rows" do
-      @qs.run(["list", {"foo"=>"bar"}, {"q" => "ok"}]).should == ["start", ["bacon"], {}]
+      @qs.run(["list", {"foo"=>"bar"}, {"q" => "ok"}]).should == ["start", ["bacon"], {"headers"=>{}}]
       @qs.run(["list_row", {"key"=>"baz"}]).should ==  ["chunks", ["baz"]]
       @qs.run(["list_row", {"key"=>"foom"}]).should == ["chunks", ["foom"]]
       @qs.run(["list_row", {"key"=>"fooz"}]).should == ["end", ["fooz", "early"]]
       @qs.rrun(["list_row", {"key"=>"foox"}])
       @qs.jsgets["error"].should == "query_server_error"
-      begin
-        @qs.run(["reset"])
-        "raise before this".should == true
-      rescue RuntimeError => e
-        e.message.should == "no response"
-      rescue Errno::EPIPE
-        true.should == true
-      end
+      should_have_exited @qs
     end
   end
   
@@ -422,16 +443,9 @@ describe "query server that exits" do
     end
     it "should exit if it gets a non-row in the middle" do
       @qs.rrun(["list", {"foo"=>"bar"}, {"q" => "ok"}])
-      @qs.jsgets.should == ["start", ["first chunk", "ok"], {}]
+      @qs.jsgets.should == ["start", ["first chunk", "ok"], {"headers"=>{}}]
       @qs.run(["reset"])["error"].should == "query_server_error"
-      begin
-        @qs.run(["reset"])
-        "raise before this".should == true
-      rescue RuntimeError => e
-        e.message.should == "no response"
-      rescue Errno::EPIPE
-        true.should == true
-      end
+      should_have_exited @qs
     end
   end  
 end

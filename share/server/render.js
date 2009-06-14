@@ -287,6 +287,9 @@ function runListRenderFunction(renderFun, args, funSrc, htmlErrors) {
     gotRow = false;
     lastRow = false;
     respTail = "";
+    if (renderFun.arity > 2) {
+      throw("the list API has changed for CouchDB 0.10, please upgrade your code");
+    }
     var resp = renderFun.apply(null, args);
     if (!gotRow) {
       getRow();
