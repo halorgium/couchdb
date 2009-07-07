@@ -295,7 +295,7 @@ validate_doc_update(#db{name=DbName,user_ctx=Ctx}=Db, Doc, GetDiskDocFun) ->
     end.
 
 
-prep_and_validate_update(Db, #doc{id=Id,revs={RevStart, [_NewRev|PrevRevs]}}=Doc,
+prep_and_validate_update(Db, #doc{id=Id,revs={RevStart, [NewRev|PrevRevs]}}=Doc,
         OldFullDocInfo, LeafRevsDict) ->
     case PrevRevs of
     [PrevRev|_] ->
@@ -315,9 +315,13 @@ prep_and_validate_update(Db, #doc{id=Id,revs={RevStart, [_NewRev|PrevRevs]}}=Doc
         end;
     [] ->
         % new doc, and we have existing revs.
+        % reuse existing deleted doc
         if OldFullDocInfo#full_doc_info.deleted ->
             % existing docs are deletions
-            {validate_doc_update(Db, Doc, fun() -> nil end), Doc};
+             #doc_info{revs=[#rev_info{rev={Pos, DelRevId}}|_]} = 
+                couch_doc:to_doc_info(OldFullDocInfo),
+            Doc2 = Doc#doc{revs={Pos+1, [NewRev, DelRevId]}},
+            {validate_doc_update(Db, Doc2, fun() -> nil end), Doc2};
         true ->
             {conflict, Doc}
         end
@@ -467,7 +471,7 @@ update_docs(Db, Docs, Options, replicated_changes) ->
         DocErrors = [],
         DocBuckets3 = DocBuckets
     end,
-    {ok, []} = write_and_commit(Db, DocBuckets3, [merge_conflicts | Options]),
+    {ok, []} = write_and_commit(Db, DocBuckets3, [], [merge_conflicts | Options]),
     {ok, DocErrors};
 
 update_docs(Db, Docs, Options, interactive_edit) ->
@@ -475,16 +479,41 @@ update_docs(Db, Docs, Options, interactive_edit) ->
     AllOrNothing = lists:member(all_or_nothing, Options),
     % go ahead and generate the new revision ids for the documents.
     Docs2 = lists:map(
-        fun(#doc{id=Id,revs={Start, RevIds}}=Doc) ->
+        fun(#doc{id=Id,revs={Start, RevIds}, attachments=Atts, body=Body,
+                deleted=Deleted}=Doc) ->
             case Id of
             <<?LOCAL_DOC_PREFIX, _/binary>> ->
-                Rev = case RevIds of [] -> 0; [Rev0|_] -> list_to_integer(?b2l(Rev0)) end,
-                Doc#doc{revs={Start, [?l2b(integer_to_list(Rev + 1))]}};
+                RevId = case RevIds of
+                    [] -> 0; 
+                    [Rev0|_] -> list_to_integer(?b2l(Rev0)) 
+                end,
+                Doc#doc{revs={Start, [?l2b(integer_to_list(RevId + 1))]}};
             _ ->
-                Doc#doc{revs={Start+1, [?l2b(integer_to_list(couch_util:rand32())) | RevIds]}}
+                NewRevId =
+                case [{Name, Type, Md5} || {Name,{Type,{_,_,_,Md5}}} 
+                        <- Atts, Md5 /= <<>>] of
+                Atts2 when length(Atts) /= length(Atts2) ->
+                    % We must have old style non-md5 attachments
+                    ?l2b(integer_to_list(couch_util:rand32()));
+                Atts2 ->
+                    NewMd5 = erlang:md5(term_to_binary([Deleted, Body, Atts2])),
+                    ?l2b(couch_util:to_hex(NewMd5))
+                end,
+                Doc#doc{revs={Start+1, [NewRevId | RevIds]}}
             end
         end, Docs),
-    DocBuckets = group_alike_docs(Docs2),
+    % separate out the NonRep documents from the rest of the documents
+    {Docs3, NonRepDocs} = lists:foldl(
+        fun(#doc{id=Id}=Doc, {DocsAcc, NonRepDocsAcc}) ->
+            case Id of
+            <<?LOCAL_DOC_PREFIX, _/binary>> ->
+                {DocsAcc, [Doc | NonRepDocsAcc]};
+            Id->
+                {[Doc | DocsAcc], NonRepDocsAcc}
+            end
+        end, {[], []}, Docs2),
+        
+    DocBuckets = group_alike_docs(Docs3),
 
     case (Db#db.validate_doc_funs /= []) orelse
         lists:any(
@@ -492,7 +521,7 @@ update_docs(Db, Docs, Options, interactive_edit) ->
                 true;
             (#doc{attachments=Atts}) ->
                 Atts /= []
-            end, Docs) of
+            end, Docs3) of
     true ->
         % lookup the doc by id and get the most recent
         Ids = [Id || [#doc{id=Id}|_] <- DocBuckets],
@@ -519,7 +548,7 @@ update_docs(Db, Docs, Options, interactive_edit) ->
     true ->
         Options2 = if AllOrNothing -> [merge_conflicts];
                 true -> [] end ++ Options,
-        {ok, CommitFailures} = write_and_commit(Db, DocBuckets2, Options2),
+        {ok, CommitFailures} = write_and_commit(Db, DocBuckets2, NonRepDocs, Options2),
         FailDict = dict:from_list(CommitFailures ++ Failures),
         % the output for each is either {ok, NewRev} or Error
         {ok, lists:map(
@@ -545,11 +574,12 @@ make_first_doc_on_disk(Db, Id, Pos, [{_Rev, {IsDel, Sp, _Seq}} |_]=DocPath) ->
 
 
 write_and_commit(#db{update_pid=UpdatePid, user_ctx=Ctx}=Db, DocBuckets,
-        Options) ->
+        NonRepDocs, Options) ->
     % flush unwritten binaries to disk.
     DocBuckets2 = [[doc_flush_binaries(Doc, Db#db.fd) || Doc <- Bucket] || Bucket <- DocBuckets],
-    case gen_server:call(UpdatePid, {update_docs, DocBuckets2, Options}, infinity) of
-    {ok, Conflicts} -> {ok, Conflicts};
+    case gen_server:call(UpdatePid, 
+            {update_docs, DocBuckets2, NonRepDocs, Options}, infinity) of
+    {ok, Failures} -> {ok, Failures};
     retry ->
         % This can happen if the db file we wrote to was swapped out by
         % compaction. Retry by reopening the db and writing to the current file
@@ -557,8 +587,8 @@ write_and_commit(#db{update_pid=UpdatePid, user_ctx=Ctx}=Db, DocBuckets,
         DocBuckets3 = [[doc_flush_binaries(Doc, Db2#db.fd) || Doc <- Bucket] || Bucket <- DocBuckets],
         % We only retry once
         close(Db2),
-        case gen_server:call(UpdatePid, {update_docs, DocBuckets3, Options}, infinity) of
-        {ok, Conflicts} -> {ok, Conflicts};
+        case gen_server:call(UpdatePid, {update_docs, DocBuckets3, NonRepDocs, Options}, infinity) of
+        {ok, Failures} -> {ok, Failures};
         retry -> throw({update_error, compaction_retry})
         end
     end.
@@ -572,19 +602,21 @@ doc_flush_binaries(Doc, Fd) ->
         end, Doc#doc.attachments),
     Doc#doc{attachments = NewAttachments}.
 
-flush_binary(Fd, {Fd0, StreamPointer, Len}) when Fd0 == Fd ->
+flush_binary(Fd, {Fd0, StreamPointer, Len, Md5}) when Fd0 == Fd ->
     % already written to our file, nothing to write
-    {Fd, StreamPointer, Len};
-
+    {Fd, StreamPointer, Len, Md5};
 flush_binary(Fd, {OtherFd, StreamPointer, Len}) when is_tuple(StreamPointer) ->
-    {NewStreamData, Len} =
+    {NewStreamData, Len, Md5} =
             couch_stream:old_copy_to_new_stream(OtherFd, StreamPointer, Len, Fd),
-    {Fd, NewStreamData, Len};
-
+    {Fd, NewStreamData, Len, Md5};
 flush_binary(Fd, {OtherFd, StreamPointer, Len}) ->
-    {NewStreamData, Len} =
+    {NewStreamData, Len, Md5} =
             couch_stream:copy_to_new_stream(OtherFd, StreamPointer, Fd),
-    {Fd, NewStreamData, Len};
+    {Fd, NewStreamData, Len, Md5};
+flush_binary(Fd, {OtherFd, StreamPointer, Len, Md5}) ->
+    {NewStreamData, Len, Md5} = 
+            couch_stream:copy_to_new_stream(OtherFd, StreamPointer, Fd),
+    {Fd, NewStreamData, Len, Md5};
 
 flush_binary(Fd, Bin) when is_binary(Bin) ->
     with_stream(Fd, fun(OutputStream) ->
@@ -615,8 +647,8 @@ flush_binary(Fd, {Fun, Len}) when is_function(Fun) ->
 with_stream(Fd, Fun) ->
     {ok, OutputStream} = couch_stream:open(Fd),
     Fun(OutputStream),
-    {StreamInfo, Len} = couch_stream:close(OutputStream),
-    {Fd, StreamInfo, Len}.
+    {StreamInfo, Len, Md5} = couch_stream:close(OutputStream),
+    {Fd, StreamInfo, Len, Md5}.
 
 
 write_streamed_attachment(_Stream, _F, 0) ->
@@ -858,7 +890,12 @@ make_doc(#db{fd=Fd}, Id, Deleted, Bp, RevisionPath) ->
     _ ->
         {ok, {BodyData0, BinValues0}} = read_doc(Fd, Bp),
         {BodyData0,
-            [{Name,{Type,{Fd,Sp,Len}}} || {Name,{Type,Sp,Len}} <- BinValues0]}
+            lists:map(
+                fun({Name,{Type,Sp,Len,Md5}}) ->
+                    {Name,{Type,{Fd,Sp,Len,Md5}}};
+                ({Name,{Type,Sp,Len}}) ->
+                    {Name,{Type,{Fd,Sp,Len,<<>>}}}
+                end, BinValues0)}
     end,
     #doc{
         id = Id,

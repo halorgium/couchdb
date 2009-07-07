@@ -580,13 +580,15 @@ db_doc_req(#httpd{method='GET'}=Req, Db, DocId) ->
     [] ->
         Doc = couch_doc_open(Db, DocId, Rev, Options),
         DiskEtag = couch_httpd:doc_etag(Doc),
-        couch_httpd:etag_respond(Req, DiskEtag, fun() ->
-            Headers = case Doc#doc.meta of
-            [] -> [{"Etag", DiskEtag}]; % output etag only when we have no meta
-            _ -> []
-            end,
-            send_json(Req, 200, Headers, couch_doc:to_json_obj(Doc, Options))
-        end);
+        case Doc#doc.meta of
+        [] ->
+            % output etag only when we have no meta
+            couch_httpd:etag_respond(Req, DiskEtag, fun() -> 
+                send_json(Req, 200, [{"Etag", DiskEtag}], couch_doc:to_json_obj(Doc, Options))
+            end);
+        _ ->
+            send_json(Req, 200, [], couch_doc:to_json_obj(Doc, Options))
+        end;
     _ ->
         {ok, Results} = couch_db:open_doc_revs(Db, DocId, Revs, Options),
         {ok, Resp} = start_json_response(Req, 200),

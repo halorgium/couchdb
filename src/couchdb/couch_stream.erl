@@ -37,7 +37,8 @@
     buffer_list = [],
     buffer_len = 0,
     max_buffer = 4096,
-    written_len = 0
+    written_len = 0,
+    md5
     }).
 
 
@@ -86,7 +87,7 @@ write(Pid, Bin) ->
 
 
 init(Fd) ->
-    {ok, #stream{fd = Fd}}.
+    {ok, #stream{fd=Fd, md5=erlang:md5_init()}}.
 
 terminate(_Reason, _Stream) ->
     ok.
@@ -99,14 +100,18 @@ handle_call({write, Bin}, _From, Stream) ->
         written_pointers = Written,
         buffer_len = BufferLen,
         buffer_list = Buffer,
-        max_buffer = Max} = Stream,
+        max_buffer = Max,
+        md5 = Md5} = Stream,
     if BinSize + BufferLen > Max ->
-        {ok, Pos} = couch_file:append_binary(Fd, lists:reverse(Buffer, [Bin])),
+        WriteBin = lists:reverse(Buffer, [Bin]),
+        Md5_2 = erlang:md5_update(Md5, WriteBin),
+        {ok, Pos} = couch_file:append_binary(Fd, WriteBin),
         {reply, ok, Stream#stream{
                         written_len=WrittenLen + BufferLen + BinSize,
                         written_pointers=[Pos|Written],
                         buffer_list=[],
-                        buffer_len=0}};
+                        buffer_len=0,
+                        md5=Md5_2}};
     true ->
         {reply, ok, Stream#stream{
                         buffer_list=[Bin|Buffer],
@@ -118,14 +123,17 @@ handle_call(close, _From, Stream) ->
         written_len = WrittenLen,
         written_pointers = Written,
         buffer_len = BufferLen,
-        buffer_list = Buffer} = Stream,
+        buffer_list = Buffer,
+        md5 = Md5} = Stream,
 
     case Buffer of
     [] ->
-        Result = {lists:reverse(Written), WrittenLen};
+        Result = {lists:reverse(Written), WrittenLen, erlang:md5_final(Md5)};
     _ ->
-        {ok, Pos} = couch_file:append_binary(Fd, lists:reverse(Buffer)),
-        Result = {lists:reverse(Written, [Pos]), WrittenLen + BufferLen}
+        WriteBin = lists:reverse(Buffer),
+        Md5Final = erlang:md5_final(erlang:md5_update(Md5, WriteBin)),
+        {ok, Pos} = couch_file:append_binary(Fd, WriteBin),
+        Result = {lists:reverse(Written, [Pos]), WrittenLen + BufferLen, Md5Final}
     end,
     {stop, normal, Result, Stream}.
 

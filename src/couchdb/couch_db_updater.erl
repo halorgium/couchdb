@@ -44,12 +44,15 @@ terminate(Reason, _Srv) ->
 
 handle_call(get_db, _From, Db) ->
     {reply, {ok, Db}, Db};
-handle_call({update_docs, DocActions, Options}, _From, Db) ->
-    try update_docs_int(Db, DocActions, Options) of
-    {ok, Conflicts, Db2} ->
+handle_call({update_docs, GroupedDocs, NonRepDocs, Options}, _From, Db) ->
+    try update_docs_int(Db, GroupedDocs, NonRepDocs, Options) of
+    {ok, Failures, Db2} ->
         ok = gen_server:call(Db#db.main_pid, {db_updated, Db2}),
-        couch_db_update_notifier:notify({updated, Db2#db.name}),
-        {reply, {ok, Conflicts}, Db2}
+        if Db2#db.update_seq /= Db#db.update_seq ->
+            couch_db_update_notifier:notify({updated, Db2#db.name});
+        true -> ok
+        end,
+        {reply, {ok, Failures}, Db2}
     catch
         throw: retry ->
             {reply, retry, Db}
@@ -372,15 +375,15 @@ flush_trees(#db{fd=Fd}=Db, [InfoUnflushed | RestUnflushed], AccFlushed) ->
             #doc{attachments=Atts,deleted=IsDeleted}=Doc ->
                 % this node value is actually an unwritten document summary,
                 % write to disk.
-                % make sure the Fd in the written bins is the same Fd we are.
+                % make sure the Fd in the written bins is the same Fd we are
+                % and convert bins, removing the FD.
+                % All bins should have been written to disk already.
                 Bins =
                 case Atts of
                 [] -> [];
-                [{_BName, {_Type, {BinFd, _Sp, _Len}}} | _ ] when BinFd == Fd ->
-                    % convert bins, removing the FD.
-                    % All bins should have been flushed to disk already.
-                    [{BinName, {BinType, BinSp, BinLen}}
-                        || {BinName, {BinType, {_Fd, BinSp, BinLen}}}
+                [{_BName, {_Type, {BinFd, _Sp, _Len, _Md5}}} | _ ] when BinFd == Fd ->
+                    [{BinName, {BinType, BinSp, BinLen, Md5}}
+                        || {BinName, {BinType, {_Fd, BinSp, BinLen, Md5}}}
                         <- Atts];
                 _ ->
                     % BinFd must not equal our Fd. This can happen when a database
@@ -408,6 +411,26 @@ merge_rev_trees(MergeConflicts, [NewDocs|RestDocsList],
             {_NewTree, conflicts}
                     when (not OldDeleted) and (not MergeConflicts) ->
                 {AccTree, [{{Id, {Pos,Rev}}, conflict} | AccConflicts2]};
+            {NewTree, no_conflicts}
+                    when (not MergeConflicts) andalso (AccTree == NewTree) ->
+                % the tree didn't change at all
+                % meaning we are saving a rev that's already
+                % been editted again.
+                if (Pos == 1) and OldDeleted ->
+                    % this means we are recreating a brand new document
+                    % into a state that already existed before.
+                    % put the rev into a subsequent edit of the deletion
+                    #doc_info{revs=[#rev_info{rev={OldPos,OldRev}}|_]} = 
+                            couch_doc:to_doc_info(OldDocInfo),
+                    NewDoc2 = NewDoc#doc{revs={OldPos + 1, [Rev, OldRev]}},
+                    {NewTree2, _} = couch_key_tree:merge(AccTree,
+                            [couch_db:doc_to_tree(NewDoc2)]),
+                    % we changed the rev id, this tells the caller we did.
+                    {NewTree2, [{{Id, {Pos,Rev}}, {ok, {OldPos + 1, Rev}}}
+                            | AccConflicts2]};
+                true ->
+                    {AccTree, [{{Id, {Pos,Rev}}, conflict} | AccConflicts2]}
+                end;
             {NewTree, _} ->
                 {NewTree, AccConflicts2}
             end
@@ -444,26 +467,13 @@ stem_full_doc_infos(#db{revs_limit=Limit}, DocInfos) ->
     [Info#full_doc_info{rev_tree=couch_key_tree:stem(Tree, Limit)} ||
             #full_doc_info{rev_tree=Tree}=Info <- DocInfos].
 
-
-update_docs_int(Db, DocsList, Options) ->
+update_docs_int(Db, DocsList, NonRepDocs, Options) ->
     #db{
         fulldocinfo_by_id_btree = DocInfoByIdBTree,
         docinfo_by_seq_btree = DocInfoBySeqBTree,
         update_seq = LastSeq
         } = Db,
-    % separate out the NonRep documents from the rest of the documents
-    {DocsList2, NonRepDocs} = lists:foldl(
-        fun([#doc{id=Id}=Doc | _]=Docs, {DocsListAcc, NonRepDocsAcc}) ->
-            case Id of
-            <<?LOCAL_DOC_PREFIX, _/binary>> ->
-                {DocsListAcc, [Doc | NonRepDocsAcc]};
-            Id->
-                {[Docs | DocsListAcc], NonRepDocsAcc}
-            end
-        end, {[], []}, DocsList),
-
-    Ids = [Id || [#doc{id=Id}|_] <- DocsList2],
-
+    Ids = [Id || [#doc{id=Id}|_] <- DocsList],
     % lookup up the old documents, if they exist.
     OldDocLookups = couch_btree:lookup(DocInfoByIdBTree, Ids),
     OldDocInfos = lists:zipwith(
@@ -477,7 +487,7 @@ update_docs_int(Db, DocsList, Options) ->
     % Merge the new docs into the revision trees.
     {ok, NewDocInfos0, RemoveSeqs, Conflicts, NewSeq} = merge_rev_trees(
             lists:member(merge_conflicts, Options),
-            DocsList2, OldDocInfos, [], [], [], LastSeq),
+            DocsList, OldDocInfos, [], [], [], LastSeq),
 
     NewFullDocInfos = stem_full_doc_infos(Db, NewDocInfos0),
 
@@ -598,13 +608,13 @@ copy_doc_attachments(SrcFd, SrcSp, DestFd) ->
     {ok, {BodyData, BinInfos}} = couch_db:read_doc(SrcFd, SrcSp),
     % copy the bin values
     NewBinInfos = lists:map(
-        fun({Name, {Type, BinSp, Len}}) when is_tuple(BinSp) orelse BinSp == null ->
+        fun({Name, {Type, BinSp, Len, <<>>}}) when is_tuple(BinSp) orelse BinSp == null ->
             % 09 UPGRADE CODE
-            {NewBinSp, Len} = couch_stream:old_copy_to_new_stream(SrcFd, BinSp, Len, DestFd),
-            {Name, {Type, NewBinSp, Len}};
-        ({Name, {Type, BinSp, Len}}) ->
-            {NewBinSp, Len} = couch_stream:copy_to_new_stream(SrcFd, BinSp, DestFd),
-            {Name, {Type, NewBinSp, Len}}
+            {NewBinSp, Len, Md5} = couch_stream:old_copy_to_new_stream(SrcFd, BinSp, Len, DestFd),
+            {Name, {Type, NewBinSp, Len, Md5}};
+        ({Name, {Type, BinSp, Len, Md5}}) ->
+            {NewBinSp, Len, Md5} = couch_stream:copy_to_new_stream(SrcFd, BinSp, DestFd),
+            {Name, {Type, NewBinSp, Len, Md5}}
         end, BinInfos),
     {BodyData, NewBinInfos}.
 

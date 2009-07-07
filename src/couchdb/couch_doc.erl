@@ -15,7 +15,7 @@
 -export([to_doc_info/1,to_doc_info_path/1,parse_rev/1,parse_revs/1,rev_to_str/1,rev_to_strs/1]).
 -export([bin_foldl/3,bin_size/1,bin_to_binary/1,get_validate_doc_fun/1]).
 -export([from_json_obj/1,to_json_obj/2,has_stubs/1, merge_stubs/2]).
--export([validate_docid/1]).
+-export([validate_docid/1,bin_md5/1]).
 
 -include("couch_db.hrl").
 
@@ -255,20 +255,27 @@ to_doc_info_path(#full_doc_info{id=Id,rev_tree=Tree}) ->
 
 bin_foldl(Bin, Fun, Acc) when is_binary(Bin) ->
     Fun(Bin, Acc);
-bin_foldl({Fd, Sp, Len}, Fun, Acc) when is_tuple(Sp) orelse Sp == null ->
+bin_foldl({Fd, Sp, Len, _Md5}, Fun, Acc) when is_tuple(Sp) orelse Sp == null ->
     % 09 UPGRADE CODE
     couch_stream:old_foldl(Fd, Sp, Len, Fun, Acc);
-bin_foldl({Fd, Sp, _Len}, Fun, Acc) ->
+bin_foldl({Fd, Sp, _Len, _Md5}, Fun, Acc) ->
     couch_stream:foldl(Fd, Sp, Fun, Acc).
 
 bin_size(Bin) when is_binary(Bin) ->
     size(Bin);
-bin_size({_Fd, _Sp, Len}) ->
+bin_size({_Fd, _Sp, Len, _Md5}) ->
     Len.
+    
+bin_md5(Bin) when is_binary(Bin) ->
+    {ok, erlang:md5(Bin)};
+bin_md5({_Fd, _Sp, _Len, <<>>}) ->
+    none;
+bin_md5({_Fd, _Sp, _Len, Md5}) ->
+    {ok, Md5}.
 
 bin_to_binary(Bin) when is_binary(Bin) ->
     Bin;
-bin_to_binary({Fd, Sp, _Len}) ->
+bin_to_binary({Fd, Sp, _Len, _Md5}) ->
     couch_stream:foldl(Fd, Sp, fun(Bin, Acc) -> [Bin|Acc] end, []).
 
 get_validate_doc_fun(#doc{body={Props}}) ->
